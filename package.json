@@ -1,0 +1,31 @@
+{
+  "name": "crawl",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@extractus/article-extractor": "^8.0.19",
+    "@google/genai": "^1.13.0",
+    "axios": "^1.11.0",
+    "bcryptjs": "^3.0.2",
+    "cheerio": "^1.1.2",
+    "crawl4ai": "^1.0.1",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "mongoose": "^8.17.0",
+    "morgan": "^1.10.1",
+    "node-cron": "^4.2.1",
+    "nodemon": "^3.1.10",
+    "rss-parser": "^3.13.0",
+    "sanitize-html": "^2.17.0",
+    "slugify": "^1.6.6",
+    "xml2js": "^0.6.2"
+  }
+}
