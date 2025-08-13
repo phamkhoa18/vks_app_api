@@ -81,13 +81,24 @@ const Utils = {
     }
   },
 
+
+  // generateSlug ramdom 3 key, output ( slug + 3 key ramdom )
   generateSlug: (text) => {
-    return slugify(text, {
+    // Tạo slug cơ bản
+    const baseSlug = slugify(text, {
       lower: true,      // chuyển thành chữ thường
       strict: true,     // chỉ cho phép chữ, số, dấu '-'
-      remove: /[*+~.()'"!:@]/g  // loại bỏ ký tự đặc biệt (tuỳ chỉnh nếu cần)
+      remove: /[*+~.()'"!:@]/g  // loại bỏ ký tự đặc biệt
     });
-}
+    
+    // Tạo 3 ký tự random (chữ và số)
+    const randomSuffix = Math.random()
+      .toString(36)      // chuyển sang base36 (0-9, a-z)
+      .substring(2, 5);  // lấy 3 ký tự từ vị trí 2-4
+    
+    // Kết hợp slug với random suffix
+    return `${baseSlug}-${randomSuffix}`;
+  }
 };
 
 export default Utils;
