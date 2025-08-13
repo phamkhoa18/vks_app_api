@@ -1,60 +1,507 @@
-import { SmartCrawler } from 'crawl4ai'
+const axios = require('axios');
+const { load } = require('cheerio');
+const sanitize = require('sanitize-html');
+const { parseStringPromise } = require('xml2js');
 
-const crawlKiemSatCategory = async () => {
-  const startUrl = 'https://kiemsat.vn/kiem-sat-24h';
-  const visited = new Set();
-  const maxPages = 10; // Số trang tối đa muốn crawl
+// Cấu hình headers để tránh bị block
+const getRandomHeaders = () => {
+  const userAgents = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  ];
 
-  const crawler = new SmartCrawler({
-    headless: true,
-    maxConcurrency: 3,
-    timeout: 30000,
-  });
-
-  const articles = [];
-
-  // Hàm xử lý 1 trang
-  const handlePage = async (url) => {
-    if (visited.has(url) || visited.size >= maxPages) return;
-    visited.add(url);
-
-    console.log(`🕸️ Crawling: ${url}`);
-
-    const result = await crawler.crawl(url);
-
-    const links = result?.links || [];
-
-    for (const link of links) {
-      if (
-        link.includes('/kiem-sat-24h/') &&
-        !link.includes('#') &&
-        !link.includes('?') &&
-        !visited.has(link)
-      ) {
-        articles.push(link);
-      }
-    }
-
-    // Auto detect "next page"
-    const next = result?.nextPage;
-    if (next && typeof next === 'string') {
-      await handlePage(next);
-    } else {
-      // thử tìm link chứa từ "trang" (hoặc page=2 dạng đó)
-      const nextLink = links.find(l => l.match(/trang-[0-9]+\.htm/i) || l.match(/page=[0-9]+/i));
-      if (nextLink) await handlePage(nextLink);
-    }
+  return {
+    'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'max-age=0',
+    'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Referer': 'https://vnexpress.net/',
+    'Connection': 'keep-alive'
   };
-
-  await handlePage(startUrl);
-
-  // In kết quả
-  const uniqueArticles = [...new Set(articles)];
-  uniqueArticles.forEach((link, i) => {
-    console.log(`[${i + 1}] 🔗 ${link}`);
-  });
-
-  process.exit();
 };
 
-crawlKiemSatCategory();
+// Hàm delay random
+const randomDelay = (min = 1000, max = 3000) => {
+  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+  return new Promise(resolve => setTimeout(resolve, delay));
+};
+
+// Hàm retry với exponential backoff
+const fetchWithRetry = async (url, maxRetries = 3, baseDelay = 1000) => {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const headers = getRandomHeaders();
+      const config = {
+        headers,
+        timeout: 30000, // 30 seconds timeout
+        maxRedirects: 5,
+        validateStatus: function (status) {
+          return status >= 200 && status < 500; // Resolve only if the status code is less than 500
+        }
+      };
+
+      console.log(`Attempt ${attempt + 1}/${maxRetries} for URL: ${url}`);
+      
+      const response = await axios.get(url, config);
+      
+      if (response.status === 406) {
+        throw new Error(`HTTP 406: Not Acceptable`);
+      }
+      
+      if (response.status !== 200) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      return response;
+    } catch (error) {
+      console.error(`Attempt ${attempt + 1} failed:`, error.message);
+      
+      if (attempt === maxRetries - 1) {
+        throw error; // Throw on final attempt
+      }
+      
+      // Exponential backoff với jitter
+      const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+      console.log(`Waiting ${Math.round(delay)}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+};
+
+const RssCrawl = {
+  fetchRssData_vnexpress: async(req, res) => {
+    try {
+      await Utils.connectDB();
+      const {url, category, source, author} = req.body;
+      
+      // Sử dụng fetch với headers để lấy RSS
+      const headers = getRandomHeaders();
+      const response = await fetch(url, { 
+        headers: {
+          'User-Agent': headers['User-Agent'],
+          'Accept': 'application/rss+xml, application/xml, text/xml',
+          'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Lỗi HTTP khi lấy RSS! trạng thái: ${response.status}`);
+      }
+      
+      const text = await response.text();
+      
+      // Parse XML using xml2js
+      const result = await parseStringPromise(text, { trim: true });
+
+      // Extract items from the parsed XML
+      const items = result.rss.channel[0].item || [];
+      const articles = items.map(item => {
+        const descriptionRaw = item.description?.[0] || '';
+        const descriptionMatch = descriptionRaw.match(/<!\[CDATA\[(.*?)\]\]>/s);
+        const description = descriptionMatch ? descriptionMatch[1].trim() : descriptionRaw;
+
+        const imgMatch = description.match(/<img src="([^"]+)"/);
+        const imageUrl = imgMatch ? imgMatch[1] : '';
+
+        return {
+          title: item.title?.[0] || '',
+          url: item.link?.[0] || '',
+          description: description,
+          image: imageUrl,
+          published_date: item.pubDate?.[0] || '',
+          category: category,
+          source: source,
+          author: author
+        };
+      });
+
+      // Kiểm tra bài viết đã tồn tại chưa
+      const checkResults = await Promise.all(
+        articles.map(async (article) => {
+          const exist = await ArticleServices.isArticleExist(article.title);
+          return { article, exist };
+        })
+      );
+
+      // Lọc ra bài mới
+      const newArticles = checkResults
+        .filter(item => !item.exist)
+        .map(item => item.article);
+
+      console.log(`Tìm thấy ${newArticles.length} bài viết mới trên VnExpress.`);
+
+      // Lấy chi tiết từng bài viết với delay
+      let successCount = 0;
+      let skipCount = 0;
+      
+      for (let i = 0; i < newArticles.length; i++) {
+        const article = newArticles[i];
+        try {
+          console.log(`📖 Processing article ${i + 1}/${newArticles.length}: ${article.title}`);
+          
+          // Random delay giữa các requests
+          await randomDelay(2000, 5000);
+          
+          const fullArticle = await RssCrawl.detailVnExpress(article);
+          
+          // Kiểm tra xem có lấy được chi tiết không
+          if (fullArticle && fullArticle.content && fullArticle.content_html) {
+            // Chỉ lưu khi lấy chi tiết thành công
+            const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+            successCount++;
+            console.log(`✅ Saved article ${i + 1}/${newArticles.length} - ID: ${savedArticle._id}`);
+          } else {
+            // Bỏ qua bài này nếu không lấy được chi tiết
+            skipCount++;
+            console.log(`⏭️ Skipped article ${i + 1}/${newArticles.length} - No detail content: ${article.title}`);
+          }
+          
+        } catch (err) {
+          skipCount++;
+          console.error(`❌ Error processing article ${i + 1}: ${article.title}`, err.message);
+          console.log(`⏭️ Skipping and continue with next article...`);
+          // Continue với bài tiếp theo thay vì dừng
+          continue;
+        }
+      }
+
+      console.log(`🎉 Hoàn tất crawl VnExpress: ✅ ${successCount} saved, ⏭️ ${skipCount} skipped`);
+      return res.json({
+        status: 200,
+        message: 'Hoàn tất crawl Vnexpress',
+        total_new_articles: newArticles.length,
+        successful_saves: successCount,
+        skipped_articles: skipCount
+      });
+
+    } catch (error) {
+      console.error("🔥 Lỗi khi lấy dữ liệu RSS VnExpress:", error);
+      return res.status(500).json({ 
+        error: 'Lỗi khi crawl dữ liệu VnExpress',
+        details: error.message 
+      });
+    }
+  },
+
+  detailVnExpress: async(item) => {
+    try {
+      console.log(`🔍 Fetching detail for: ${item.title}`);
+      
+      // Sử dụng fetchWithRetry thay vì axios.get trực tiếp
+      const response = await fetchWithRetry(item.url, 3, 2000);
+      const html = response.data;
+      
+      if (!html || html.trim().length === 0) {
+        console.warn(`⚠️ Empty HTML response for: ${item.url}`);
+        return null; // Trả về null thay vì object rỗng
+      }
+      
+      const $ = load(html);
+
+      // Lấy title từ h1.title-detail hoặc fallback về item.title
+      const title = $('h1.title-detail').text().trim() || 
+                    $('.title-detail').text().trim() || 
+                    item.title;
+
+      // Lấy description từ p.description
+      const description = $('p.description').text().trim() || 
+                        $('.description').first().text().trim() || 
+                        item.description;
+
+      // Lấy thời gian xuất bản từ .date
+      let published_date = $('.date').text().trim() || item.published_date;
+      
+      // Parse date nếu có định dạng "Thứ tư, 13/8/2025, 13:42 (GMT+7)"
+      if (published_date && published_date.includes('/')) {
+        try {
+          const dateMatch = published_date.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+          if (dateMatch) {
+            const [day, month, year] = dateMatch[1].split('/');
+            published_date = new Date(year, month - 1, day).toISOString();
+          }
+        } catch (dateError) {
+          console.warn('⚠️ Không thể parse date:', published_date);
+          published_date = item.published_date;
+        }
+      }
+
+      // Lấy ảnh chính - VnExpress có nhiều source khác nhau
+      let image = item.image;
+      
+      // Thử lấy từ meta og:image trước
+      const ogImage = $('meta[property="og:image"]').attr('content');
+      if (ogImage) {
+        image = ogImage;
+      } else {
+        // Tìm figure đầu tiên có ảnh
+        const $firstFigure = $('figure').first();
+        if ($firstFigure.length > 0) {
+          const figureImg = $firstFigure.find('img').attr('src') ||
+                          $firstFigure.find('img').attr('data-src') ||
+                          $firstFigure.find('source').attr('srcset')?.split(' ')[0] ||
+                          $firstFigure.find('source').attr('data-srcset')?.split(' ')[0];
+          
+          if (figureImg) {
+            image = figureImg;
+          }
+        }
+        
+        // Nếu vẫn không có, thử tìm từ meta itemprop
+        if (!image || image === item.image) {
+          const metaImg = $('meta[itemprop="url"]').attr('content') ||
+                        $('meta[itemprop="image"]').attr('content');
+          if (metaImg) {
+            image = metaImg;
+          }
+        }
+      }
+
+      // Lấy tác giả
+      let author = item.author;
+
+      // Lấy nội dung chính từ article.fck_detail
+      const $article = $('article.fck_detail').clone();
+      
+      if ($article.length === 0) {
+        console.warn('⚠️ Không tìm thấy nội dung chính cho:', item.url);
+        return null; // Trả về null thay vì object thiếu content
+      }
+
+      // Xóa các phần không cần thiết
+      $article.find('.width_common.box-tinlienquanv2').remove();
+      $article.find('#sis_outstream_container').remove();
+      $article.find('.box_brief_info').remove();
+      $article.find('span[id="article-end"]').remove();
+      $article.find('p[style*="text-align:right"]').last().remove();
+
+      // Xử lý hình ảnh trong nội dung
+      $article.find('img').each((_, el) => {
+        const $img = $(el);
+        let imgSrc = null;
+        
+        imgSrc = $img.attr('src') ||
+                $img.attr('data-src') ||
+                $img.attr('data-original');
+        
+        if (!imgSrc) {
+          const $figure = $img.closest('figure');
+          if ($figure.length > 0) {
+            const metaUrl = $figure.find('meta[itemprop="url"]').attr('content');
+            if (metaUrl) {
+              imgSrc = metaUrl;
+            } else {
+              const $picture = $img.closest('picture') || $figure.find('picture');
+              if ($picture.length > 0) {
+                const sourceUrl = $picture.find('source').attr('srcset')?.split(' ')[0] ||
+                                $picture.find('source').attr('data-srcset')?.split(' ')[0] ||
+                                $picture.find('img').attr('src') ||
+                                $picture.find('img').attr('data-src');
+                if (sourceUrl) {
+                  imgSrc = sourceUrl;
+                }
+              }
+            }
+          }
+        }
+        
+        if (imgSrc) {
+          if (imgSrc.startsWith('//')) {
+            imgSrc = 'https:' + imgSrc;
+          } else if (imgSrc.startsWith('/')) {
+            imgSrc = 'https://vnexpress.net' + imgSrc;
+          }
+          
+          $img.attr('src', imgSrc);
+          $img.attr('style', 'max-width: 100%; height: auto; display: block; margin: 10px auto;');
+          $img.removeAttr('data-src data-original data-srcset data-ll-status intrinsicsize loading lazied class');
+        } else {
+          console.warn('⚠️ Không tìm thấy src cho img, đã xóa:', $img.attr('alt') || 'no alt');
+          $img.remove();
+        }
+      });
+
+      // Xử lý figure và figcaption
+      $article.find('figure').each((_, el) => {
+        const $figure = $(el);
+        
+        $figure.find('.action_thumb').remove();
+        $figure.find('meta').remove();
+        $figure.find('.fig-picture').removeClass('el_valid');
+        
+        const $img = $figure.find('img');
+        const $picture = $figure.find('picture');
+        
+        if ($picture.length > 0) {
+          const $source = $picture.find('source').first();
+          const $pictureImg = $picture.find('img').first();
+          
+          let imgUrl = null;
+          
+          if ($source.length > 0) {
+            const srcset = $source.attr('srcset') || $source.attr('data-srcset');
+            if (srcset) {
+              imgUrl = srcset.split(',')[0].trim().split(' ')[0];
+            }
+          }
+          
+          if (!imgUrl && $pictureImg.length > 0) {
+            imgUrl = $pictureImg.attr('src') || $pictureImg.attr('data-src');
+          }
+          
+          if (imgUrl) {
+            const newImg = $('<img>');
+            newImg.attr('src', imgUrl);
+            newImg.attr('alt', $pictureImg.attr('alt') || '');
+            newImg.attr('style', 'max-width: 100%; height: auto; display: block; margin: 10px auto;');
+            
+            $picture.replaceWith(newImg);
+          } else {
+            $picture.remove();
+          }
+        }
+        
+        const $finalImg = $figure.find('img');
+        if ($finalImg.length === 0 || !$finalImg.attr('src')) {
+          $figure.remove();
+          return;
+        }
+        
+        $figure.attr('style', 'margin: 20px 0; text-align: center;');
+        
+        const $caption = $figure.find('figcaption p.Image, figcaption');
+        if ($caption.length > 0) {
+          $caption.attr('style', 'font-style: italic; color: #666; margin-top: 8px; font-size: 14px;');
+        }
+      });
+
+      // Xử lý links
+      $article.find('a').each((_, el) => {
+        const $link = $(el);
+        $link.attr('target', '_blank');
+        $link.attr('rel', 'noopener noreferrer');
+      });
+
+      // Làm sạch HTML bằng sanitize-html
+      let raw_clean_html = sanitize($article.html() || '', {
+        allowedTags: [
+          'p', 'b', 'i', 'em', 'strong', 'a', 'ul', 'ol', 'li', 'br', 'div',
+          'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'img', 'figure', 
+          'figcaption', 'blockquote'
+        ],
+        allowedAttributes: {
+          a: ['href', 'target', 'rel'],
+          img: ['src', 'alt', 'style', 'title'],
+          figure: ['style'],
+          figcaption: ['style'],
+          p: ['style'],
+          div: ['style'],
+          span: ['style']
+        },
+        allowedStyles: {
+          '*': {
+            'color': [/^#([0-9a-f]{3}|[0-9a-f]{6})$/i, /^rgb\(\d+,\s*\d+,\s*\d+\)$/],
+            'font-size': [/^\d+(?:px|em|rem|%)$/],
+            'font-style': [/^italic$/],
+            'font-weight': [/^(bold|normal|\d+)$/],
+            'text-align': [/^(left|right|center|justify)$/],
+            'margin': [/^[\d\s\w%.-]+$/],
+            'margin-top': [/^[\d\w%.-]+$/],
+            'margin-bottom': [/^[\d\w%.-]+$/],
+            'padding': [/^[\d\s\w%.-]+$/],
+            'max-width': [/^100%$/],
+            'width': [/^100%$/],
+            'height': [/^auto$/],
+            'display': [/^(block|inline|inline-block)$/]
+          }
+        },
+        transformTags: {
+          'div': function(tagName, attribs) {
+            if (!attribs.class || attribs.class.trim() === '') {
+              return {
+                tagName: 'p',
+                attribs: attribs
+              };
+            }
+            return {
+              tagName: tagName,
+              attribs: attribs
+            };
+          }
+        },
+        exclusiveFilter: function(frame) {
+          return frame.tag === 'p' && !frame.text.trim();
+        },
+        textFilter: function(text) {
+          return text.replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+        }
+      });
+
+      // Lấy text thuần không có HTML
+      const content = $article.text()
+        .replace(/\s+/g, ' ')
+        .replace(/\n+/g, ' ')
+        .trim();
+
+      // Kiểm tra content có đủ dài không (tối thiểu 100 ký tự)
+      if (!content || content.length < 100) {
+        console.warn(`⚠️ Content quá ngắn hoặc rỗng cho: ${item.url}`);
+        return null; // Trả về null nếu content quá ngắn
+      }
+
+      // Tạo AI summary (nếu có Utils.ai_summary)
+      let content_ai_summary = null;
+      try {
+        if (typeof Utils !== 'undefined' && Utils.ai_summary) {
+          content_ai_summary = await Utils.ai_summary(description + ' ' + content);
+        }
+      } catch (aiError) {
+        console.warn('⚠️ Không thể tạo AI summary:', aiError.message);
+      }
+
+      // Tạo object kết quả
+      const fullArticle = {
+        title,
+        url: item.url,
+        image,
+        description,
+        published_date,
+        content,
+        content_html: raw_clean_html,
+        category: item.category || 'Pháp luật',
+        summary_array: content_ai_summary?.summaryArray || [],
+        summary: content_ai_summary?.summary || description,
+        source: item.source || 'VnExpress',
+        author: author || 'VnExpress'
+      };
+
+      console.log(`✅ Successfully processed: ${title}`);
+      return fullArticle;
+
+    } catch (error) {
+      console.error(`❌ Lỗi khi lấy chi tiết bài viết ${item.title}:`, error.message);
+      console.error('🔗 URL:', item.url);
+      
+      // Log chi tiết hơn để debug
+      if (error.response) {
+        console.error(`📊 Response status: ${error.response.status}`);
+        console.error(`📋 Response headers:`, error.response.headers);
+      }
+      
+      // Trả về null thay vì object lỗi
+      return null;
+    }
+  }
+};
+
+module.exports = RssCrawl;
