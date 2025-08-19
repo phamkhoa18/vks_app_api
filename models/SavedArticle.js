@@ -6,4 +6,6 @@ const SavedArticleSchema = new mongoose.Schema({
   savedAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model('SavedArticle', SavedArticleSchema);
+const SavedArticle = mongoose.model('SavedArticle', SavedArticleSchema);
+
+export default SavedArticle;

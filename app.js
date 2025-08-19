@@ -7,6 +7,9 @@ import CrawlRouter from './routers/CrawlRouter.js';
 import dotenv from 'dotenv';
 import morgan from 'morgan';
 import Utils from './services/Utils.js';
+import SectionRouter from './routers/SectionRouter.js'
+import SavedArticleRouter from './routers/SaveArticleRouter.js'
+
 
 
 dotenv.config();
@@ -27,6 +30,8 @@ app.use('/api/users', userRoutes);
 app.use('/api/articles', articleRoutes);
 app.use('/api/categories' , CategoryRouter);
 app.use('/api/crawls',CrawlRouter);
+app.use('/api/sections' , SectionRouter);
+app.use('/api/savedArticle' ,SavedArticleRouter )
 
 
 // Error handling middleware
@@ -37,6 +42,8 @@ app.use((err, req, res, next) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on port ${PORT}`);
+  console.log(`Local: http://localhost:${PORT}`);
+  // console.log(`Network: http://172.18.108.239:${PORT}`);
 });
