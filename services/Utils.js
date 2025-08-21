@@ -2,85 +2,94 @@ import dotenv from 'dotenv';
 dotenv.config();
 import slugify from 'slugify';
 import mongoose from 'mongoose';
-import { GoogleGenAI } from '@google/genai';
+import OpenAI from 'openai';
 
 // Import các model
 import Article from '../models/Article.js';
 import Topic from '../models/Topic.js';
 import Section from '../models/Section.js';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 const Utils = {
 
     ai_summary: async (content) => {
-    const prompt = `
-    Bạn hãy tóm tắt nội dung dưới đây dành cho app tin tức, với yêu cầu:
+        const prompt = `
+        Bạn hãy tóm tắt nội dung dưới đây dành cho app tin tức, với yêu cầu:
 
-    - Tóm tắt thành một danh sách 3-5 ý chính, mỗi ý là một câu ngắn, rõ ràng, dễ hiểu.
-    - Mỗi ý bắt đầu bằng "- " (gạch ngang + dấu cách).
-    - Nội dung tóm tắt phải đủ ý, giúp người đọc nắm nhanh được điểm chính của bài báo mà không cần đọc hết.
-    - Phần cuối cùng, viết một đoạn **bài văn tóm tắt tổng thể dài, mạch lạc, đầy đủ và dễ hiểu**, viết liền mạnh không xuống dòng ,như một bài viết ngắn, bọc trong thẻ div với class="summary".
-    - Đặt dấu phân cách 3 gạch ngang "---" trước đoạn tóm tắt tổng thể để dễ phân biệt.
+        - Tóm tắt thành một danh sách 3-5 ý chính, mỗi ý là một câu ngắn, rõ ràng, dễ hiểu.
+        - Mỗi ý bắt đầu bằng "- " (gạch ngang + dấu cách).
+        - Nội dung tóm tắt phải đủ ý, giúp người đọc nắm nhanh được điểm chính của bài báo mà không cần đọc hết.
+        - Phần cuối cùng, viết một đoạn **bài văn tóm tắt tổng thể dài, mạch lạc, đầy đủ và dễ hiểu**, viết liền mạnh không xuống dòng ,như một bài viết ngắn, bọc trong thẻ div với class="summary".
+        - Đặt dấu phân cách 3 gạch ngang "---" trước đoạn tóm tắt tổng thể để dễ phân biệt.
 
-    Nội dung gốc:
-    """${content}"""
+        Nội dung gốc:
+        """${content}"""
 
-    Kết quả trả về đúng định dạng:
+        Kết quả trả về đúng định dạng:
 
-    - Ý chính 1
-    - Ý chính 2
-    - Ý chính 3
-    ---
-    <div class="summary">Đoạn bài văn tóm tắt tổng thể dài, đầy đủ các ý chính, được viết mạch lạc, dễ nghe như một bài báo ngắn.</div>
-    `;
-    
-    try {
-        const response = await ai.models.generateContent({
-            model: 'gemma-3-27b-it',
-            contents: prompt,
-        });
+        - Ý chính 1
+        - Ý chính 2
+        - Ý chính 3
+        ---
+        <div class="summary">Đoạn bài văn tóm tắt tổng thể dài, đầy đủ các ý chính, được viết mạch lạc, dễ nghe như một bài báo ngắn.</div>
+        `;
+        
+        try {
+            const response = await openai.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    {
+                        role: 'user',
+                        content: prompt
+                    }
+                ],
+                max_tokens: 1000,
+                temperature: 0.7,
+            });
 
-        const text = response.text.trim();
+            const text = response.choices[0].message.content.trim();
 
-        // Tách phần ý chính và phần tóm tắt tổng thể theo dấu phân cách ---
-        const parts = text.split('---');
+            // Tách phần ý chính và phần tóm tắt tổng thể theo dấu phân cách ---
+            const parts = text.split('---');
 
-        // Phần ý chính (mảng các dòng bắt đầu '- ')
-        const summaryArray = (parts[0] || '')
-          .split('\n')
-          .map(line => line.trim())
-          .filter(line => line.startsWith('- '))
-          .map(line => line.substring(2)); // loại bỏ '- '
+            // Phần ý chính (mảng các dòng bắt đầu '- ')
+            const summaryArray = (parts[0] || '')
+              .split('\n')
+              .map(line => line.trim())
+              .filter(line => line.startsWith('- '))
+              .map(line => line.substring(2)); // loại bỏ '- '
 
-        // Phần tóm tắt tổng thể bên trong <div class="summary">...</div>
-        let summary = '';
-        if (parts[1]) {
-          const match = parts[1].match(/<div\s+class=["']summary["']>([\s\S]*?)<\/div>/i);
-          if (match && match[1]) {
-            summary = match[1].trim();
-          }
+            // Phần tóm tắt tổng thể bên trong <div class="summary">...</div>
+            let summary = '';
+            if (parts[1]) {
+              const match = parts[1].match(/<div\s+class=["']summary["']>([\s\S]*?)<\/div>/i);
+              if (match && match[1]) {
+                summary = match[1].trim();
+              }
+            }
+
+            console.log('📝 Summary Array:', summaryArray);
+            console.log('📄 Summary Text:', summary);
+            
+            // Trả về object chứa 2 trường
+            return {
+              summaryArray: summaryArray,
+              summary: summary,
+            };
+            
+        } catch (error) {
+            console.error('❌ Lỗi khi gọi AI summary:', error.message);
+            
+            // Fallback: trả về summary đơn giản nếu AI call fail
+            return {
+              summaryArray: ['Nội dung được tóm tắt tự động'],
+              summary: content.substring(0, 200) + '...',
+            };
         }
-
-        console.log('📝 Summary Array:', summaryArray);
-        console.log('📄 Summary Text:', summary);
-        
-        // Trả về object chứa 2 trường
-        return {
-          summaryArray: summaryArray,
-          summary: summary,
-        };
-        
-    } catch (error) {
-        console.error('❌ Lỗi khi gọi AI summary:', error.message);
-        
-        // Fallback: trả về summary đơn giản nếu AI call fail
-        return {
-          summaryArray: ['Nội dung được tóm tắt tự động'],
-          summary: content.substring(0, 200) + '...',
-        };
-    }
-},
+    },
 
   // NEW: Tạo summary tổng hợp cho Section từ tất cả articles
   generateSectionSummary: async (articles) => {
@@ -113,12 +122,19 @@ const Utils = {
       BẢN TIN TỔNG HỢP (chỉ trả về nội dung, không cần format):
       `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemma-3-27b-it',
-        contents: prompt,
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
       });
 
-      const summary = response.text.trim();
+      const summary = response.choices[0].message.content.trim();
       console.log('✅ Đã tạo summary tổng hợp:', summary.substring(0, 100) + '...');
       
       return summary;
@@ -175,61 +191,66 @@ const Utils = {
         return `${index + 1}. "${article.title}" - ${shortContent}`;
       }).join('\n');
 
-      const prompt = `
-      Bạn hãy phân tích các bài viết pháp luật sau và TỰ QUYẾT ĐỊNH số lượng chủ đề phù hợp:
+      const prompt = `Phân tích các bài viết pháp luật sau và TỰ QUYẾT ĐỊNH số lượng chủ đề phù hợp:
 
-      NGUYÊN TẮC:
-      - Chỉ nhóm các bài THỰC SỰ có nội dung tương tự/liên quan về pháp luật
-      - Nếu bài viết độc lập, khác lĩnh vực pháp luật → để riêng 1 chủ đề  
-      - GIỚI HẠN: Tối đa 5-6 chủ đề, ưu tiên gom nhóm thay vì tách riêng
-      - Mỗi chủ đề nên có ít nhất 2-3 bài để có ý nghĩa
-      - Tiêu đề chủ đề phải PHÙ HỢP với lĩnh vực pháp luật cụ thể
+**NGUYÊN TẮC**:
+- Nhóm bài có nội dung pháp luật tương tự/liên quan.
+- Bài độc lập, khác lĩnh vực pháp luật → tách riêng.
+- Tối đa 5-6 chủ đề, ưu tiên gom nhóm.
+- Mỗi chủ đề có ít nhất 2-3 bài.
+- Tiêu đề chủ đề phù hợp với lĩnh vực pháp luật.
 
-      VÍ DỤ PHÂN LOẠI:
-      - Các bài về "tham nhũng, hối lộ, vi phạm kinh tế" → gom thành "Các vụ án tham nhũng và vi phạm kinh tế"
-      - Các bài về "viện kiểm sát, truy tố" → gom thành "Hoạt động của Viện Kiểm sát"
-      - Các bài về "luật đất đai, bất động sản" → "Chính sách đất đai và bất động sản"
-      - Các bài về "tòa án, xét xử, bản án" → gom thành "Hoạt động tòa án và xét xử"
-      - Các bài về "vi phạm hành chính, giao thông" → "Xử lý vi phạm hành chính"
+**VÍ DỤ PHÂN LOẠI**:
+- Tham nhũng, hối lộ → "Các vụ án tham nhũng và vi phạm kinh tế"
+- Viện kiểm sát, truy tố → "Hoạt động của Viện Kiểm sát"
+- Luật đất đai, bất động sản → "Chính sách đất đai và bất động sản"
+- Tòa án, xét xử → "Hoạt động tòa án và xét xử"
+- Vi phạm hành chính, giao thông → "Xử lý vi phạm hành chính"
 
-      CÁC BÀI VIẾT:
-      ${articlesData}
+**CÁC BÀI VIẾT**:
+${articlesData}
 
-      KẾT QUẢ (JSON format - TỐI ĐA 6 TOPICS):
-      {
-        "topics": [
+**KẾT QUẢ (JSON format, tối đa 6 chủ đề)**:
+{
+  "topics": [
+    {
+      "title": "Tiêu đề chủ đề pháp luật",
+      "articleIndexes": [1, 5, 8],
+      "reason": "Lý do gom nhóm (cùng lĩnh vực pháp luật)"
+    },
+    {
+      "title": "Chủ đề pháp luật khác",
+      "articleIndexes": [2, 7],
+      "reason": "Lý do thuộc lĩnh vực khác"
+    }
+  ],
+  "summary": "Tóm tắt: X chủ đề, Y bài được gom nhóm"
+}`;
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
           {
-            "title": "Tiêu đề chủ đề phù hợp với pháp luật",
-            "articleIndexes": [1, 5, 8],
-            "reason": "Lý do gom nhóm này (cùng lĩnh vực pháp luật)"
+            role: 'system',
+            content: 'Bạn là chuyên gia phân tích và phân loại tin tức pháp luật. Hãy trả về kết quả dưới dạng JSON hợp lệ.'
           },
           {
-            "title": "Chủ đề pháp luật khác",
-            "articleIndexes": [2, 7],
-            "reason": "Bài này thuộc lĩnh vực pháp luật khác"
+            role: 'user',
+            content: prompt
           }
         ],
-        "summary": "Tóm tắt cách phân chia: X chủ đề chính, Y bài được gom nhóm hiệu quả"
-      }
-      `;
-
-      const response = await ai.models.generateContent({
-        model: 'gemma-3-27b-it',
-        contents: prompt,
+        max_tokens: 1500,
+        temperature: 0.3,
+        response_format: { type: "json_object" }
       });
 
-      const responseText = response.text.trim();
+      const responseText = response.choices[0].message.content.trim();
       console.log('🤖 AI Analysis Response:', responseText);
 
       // Parse JSON response
       let topicsData;
       try {
-        const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          topicsData = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('Không tìm thấy JSON trong response');
-        }
+        topicsData = JSON.parse(responseText);
       } catch (parseError) {
         console.error('❌ Lỗi parse JSON:', parseError.message);
         // Fallback: gom thành 5 chủ đề đơn giản

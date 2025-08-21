@@ -389,7 +389,304 @@ const Crawl = {
     console.error("Lỗi khi crawl detail:", err.message);
     return null;
   }
+  },
+
+  scrapeNhanChinh: async(req, res) => {
+    try {
+      await Utils.connectDB();
+      const {url, category, source, author} = req.body;
+      const response = await axios.get(url);
+      const html = response.data;
+      const $ = load(html);
+
+      const articles = [];
+
+      // Scrape articles từ danh sách
+      $('.col-card-news-horizontal').each((_, element) => {
+        const el = $(element);
+        const titleLink = el.find('.card-news-horizontal h3 a');
+        const title = titleLink.text().trim();
+        const articleUrl = titleLink.attr('href') || '';
+        const image = el.find('.card-news-horizontal .image img').attr('src') || undefined;
+        const description = el.find('.desc').text().trim() || undefined;
+
+        if (title && articleUrl) {
+          // Đảm bảo URL đầy đủ
+          const fullUrl = articleUrl.startsWith('http') ? articleUrl : `https://nhanchinh.vn${articleUrl}`;
+          
+          articles.push({ 
+            title, 
+            url: fullUrl, 
+            image: image ? (image.startsWith('http') ? image : `https://nhanchinh.vn${image}`) : undefined, 
+            description, 
+            published_date: undefined,
+            category, 
+            source, 
+            author 
+          });
+        }
+      });
+
+      // Kiểm tra bài viết đã có trong DB
+      const checkResults = await Promise.all(
+        articles.map(async (article) => {
+          const exist = await ArticleServices.isArticleExist(article.title);
+          return { article, exist };
+        })
+      );
+
+      // Lọc ra bài chưa có
+      const newArticles = checkResults.filter(item => !item.exist).map(item => item.article);
+
+      console.log(`Tìm thấy ${newArticles.length} bài viết chưa có trong DB.`);
+
+      // Lấy chi tiết từng bài viết và lưu vào DB
+      for (const article of newArticles) {
+        try {
+          const fullArticle = await Crawl.scrapeNhanChinhArticleContent(article);
+          if (fullArticle) {
+            const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+            console.log('Lưu bài viết thành công với ID:', savedArticle._id);
+          }
+        } catch (err) {
+          console.error(`Lỗi lấy hoặc lưu bài viết ${article.title}:`, err.message);
+        }
+      }
+
+      return res.json({
+        status: 200,
+        message: 'Hoàn tất crawl NhanChinh.vn',
+        total_new_articles: newArticles.length,
+      });
+
+    } catch (error) {
+      console.error('Lỗi khi crawl:', error.message);
+      return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu' });
+    }
+  },
+
+  scrapeNhanChinhArticleContent: async(item) => {
+  try {
+    const response = await axios.get(item.url, { timeout: 15000 });
+    const html = response.data;
+    const $ = load(html);
+
+    // Lấy tiêu đề từ trang chi tiết
+    const title = $('.news-detail .title-detail').text().trim() || item.title;
+
+    // Lấy mô tả
+    let description = item.description;
+    if (!description) {
+      description = $('meta[name="description"]').attr('content') || '';
+    }
+
+    // Lấy ngày đăng
+    let published_date = $('.news-detail .author .date .year').text().trim();
+    if (published_date) {
+      published_date = published_date.replace(/.*(\d{2}\/\d{2}\/\d{4}).*/, '$1');
+    }
+
+    // Lấy ảnh chính
+    let image = item.image;
+    if (!image) {
+      const firstImg = $('.content-news img').first().attr('src');
+      if (firstImg) {
+        image = firstImg.startsWith('http') ? firstImg : `https://nhanchinh.vn${firstImg}`;
+      }
+    }
+
+    // Lấy nội dung
+    const contentContainer = $('.content-news');
+    let contentParts = [];
+
+    if (contentContainer.length) {
+      contentContainer.children('p').each((i, el) => {
+        const $el = $(el);
+        const text = $el.text().trim();
+        
+        // Loại bỏ các đoạn chứa thông tin liên hệ
+        const isContactInfo = text.includes('Văn phòng Luật sư Nhân Chính') ||
+                             text.includes('Liên hệ luật sư:') ||
+                             text.includes('0936683699') ||
+                             text.includes('0983951338') ||
+                             text.includes('Luatsunhanchinh@gmail.com') ||
+                             text.includes('Email:');
+        
+        if (text && text !== '&nbsp;' && !isContactInfo) {
+          contentParts.push(text);
+        }
+      });
+    }
+
+    // Lấy HTML và làm sạch
+    const rawHtml = contentContainer.html() || '';
+    
+    // Làm sạch HTML - loại bỏ thông tin liên hệ trước khi xử lý
+    const cleanedHtml = Crawl.removeContactInfoFromHtml(rawHtml);
+    const contentHtml = Crawl.cleanNhanChinhContentHtml(cleanedHtml);
+
+    // Hàm lấy text sạch
+    function getCleanText(html) {
+      const $ = load(html);
+      $('img, table, div, span, figure').remove();
+      let text = $.root().text();
+      text = text.replace(/\s+/g, ' ').trim();
+      return text;
+    }
+
+    const content_clean = getCleanText(cleanedHtml);
+    const content_ai_summary = await Utils.ai_summary(description + ' ' + content_clean);
+
+    const fullArticle = {
+      title,
+      description,
+      url: item.url,
+      image: '',
+      published_date,
+      category: item.category,
+      source: item.source,
+      author: item.author,
+      content: contentParts.join('\n\n'),
+      content_html: contentHtml,
+      content_clean: content_clean,
+      summary_array: content_ai_summary.summaryArray,
+      summary: content_ai_summary.summary
+    };
+
+    return fullArticle;
+  } catch (error) {
+    console.error(`Lỗi lấy nội dung bài viết chi tiết: ${error.message}`);
+    return null;
   }
+},
+
+// Hàm helper để loại bỏ thông tin liên hệ từ HTML
+removeContactInfoFromHtml: (html) => {
+  if (!html) return '';
+  
+  const $ = load(html);
+  
+  // Loại bỏ các thẻ p chứa thông tin liên hệ
+  $('p').each((i, el) => {
+    const $el = $(el);
+    const text = $el.text().trim();
+    
+    const isContactInfo = text.includes('Văn phòng Luật sư Nhân Chính') ||
+                         text.includes('Liên hệ luật sự:') ||
+                         text.includes('Liên hệ luật sư:') ||
+                         text.includes('0936683699') ||
+                         text.includes('0983951338') ||
+                         text.includes('Luatsunhanchinh@gmail.com') ||
+                         text.includes('Email:') ||
+                         /Email:\s*Luatsunhanchinh@gmail\.com/i.test(text);
+    
+    if (isContactInfo) {
+      $el.remove();
+    }
+  });
+  
+  // Loại bỏ các thẻ strong chứa thông tin liên hệ
+  $('strong').each((i, el) => {
+    const $el = $(el);
+    const text = $el.text().trim();
+    
+    if (text.includes('Văn phòng Luật sư Nhân Chính') ||
+        text.includes('Liên hệ luật sư:') ||
+        text.includes('Email:')) {
+      // Xóa cả thẻ p chứa strong này
+      $el.closest('p').remove();
+    }
+  });
+  
+  return $.html();
+},
+
+// Hàm làm sạch HTML cho Nhân Chính
+cleanNhanChinhContentHtml: (html) => {
+  if (!html) return '';
+  
+  const $ = load(html);
+
+  // Xử lý bảng ảnh
+  $('table.imageBox').each((i, table) => {
+    const $table = $(table);
+    const $img = $table.find('img').first();
+    const $caption = $table.find('p.PCaption').first();
+
+    const $div = $('<div></div>').css({
+      'text-align': 'center',
+      'margin': '20px 0'
+    });
+
+    if ($img.length) {
+      $img.attr('style', 'max-width:100%; height:auto;');
+      $div.append($img.clone());
+    }
+    if ($caption.length) {
+      $div.append($caption.clone());
+    }
+
+    $table.replaceWith($div);
+  });
+
+  // Xóa các thẻ và thuộc tính không cần thiết
+  $('script, style, iframe, object, embed, input, form, button').remove();
+  $('[id], [class]').removeAttr('id').removeAttr('class');
+  $('[onclick], [onload]').removeAttr('onclick').removeAttr('onload');
+  
+  // Xử lý link không hợp lệ
+  $('a').each((i, el) => {
+    const href = $(el).attr('href');
+    if (!href || href.startsWith('javascript:')) {
+      $(el).replaceWith($(el).text());
+    }
+  });
+
+  // Chuẩn hóa img
+  $('img').each((i, el) => {
+    const $img = $(el);
+    $img.removeAttr('width height class id onclick');
+    $img.attr('style', 'max-width: 100%; height: auto; display: block; margin: 0 auto;');
+    if (!$img.attr('alt')) {
+      $img.attr('alt', 'Hình ảnh bài viết');
+    }
+  });
+
+  // Xóa các thẻ rỗng
+  $('p, div').each((i, el) => {
+    const $el = $(el);
+    if (!$el.text().trim() && !$el.find('img, figure').length) {
+      $el.remove();
+    }
+  });
+
+  // Loại bỏ thông tin liên hệ một lần nữa (double-check)
+  $('p').each((i, el) => {
+    const $el = $(el);
+    const text = $el.text().trim();
+    
+    if (text.includes('Văn phòng Luật sư Nhân Chính') ||
+        text.includes('Liên hệ luật sư:') ||
+        text.includes('0936683699') ||
+        text.includes('0983951338') ||
+        text.includes('Luatsunhanchinh@gmail.com')) {
+      $el.remove();
+    }
+  });
+
+  // Lấy HTML đã làm sạch
+  let contentHtml = $('body').html() || $.root().html() || '';
+  
+  // Loại bỏ \n, khoảng trắng thừa
+  contentHtml = contentHtml
+    .replace(/\\n' \+/g, '')
+    .replace(/\\n/g, '')
+    .replace(/\s*\n\s*/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return contentHtml;
+}
 }
 
 export default Crawl;
