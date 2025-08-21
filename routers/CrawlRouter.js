@@ -10,5 +10,6 @@ router.post('/baohephapluat', Crawl.scrapeBaoVePhapLuat);
 router.post('/rss_congly', RssCrawl.fetchRssData_congly);
 router.post('/rss_vnexpress', RssCrawl.fetchRssData_vnexpress);
 router.post('/anle', Crawl.scrapeNhanChinh);
+router.post('/xaydungchinhsach',Crawl.scrapeXayDungChinhSach);
 
 export default router;

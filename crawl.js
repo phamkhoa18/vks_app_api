@@ -686,7 +686,266 @@ cleanNhanChinhContentHtml: (html) => {
     .trim();
 
   return contentHtml;
-}
+},
+
+
+scrapeXayDungChinhSach: async (req, res) => {
+  try {
+    await Utils.connectDB(); // Kết nối DB
+    const { url, category, source, author } = req.body;
+    const response = await axios.get(url);
+    const html = response.data;
+    const $ = load(html);
+
+    const articles = [];
+
+    // Scrape từ các box-category-item trong trang chủ
+    $('.box-category-item').each((_, element) => {
+      const el = $(element);
+      
+      // Lấy tiêu đề và URL
+      const titleLink = el.find('.box-category-link-title');
+      const title = titleLink.text().trim();
+      const articleUrl = titleLink.attr('href') || '';
+      
+      // Lấy ảnh đại diện
+      const image = el.find('.box-category-avatar').attr('src') || undefined;
+      
+      // Lấy mô tả/sapo
+      const description = el.find('.box-category-sapo').text().trim() || undefined;
+      
+      // Lấy thời gian đăng từ title attribute
+      let published_date = undefined;
+      const timeElement = el.find('.time-ago');
+      if (timeElement.length) {
+        const timeTitle = timeElement.attr('title');
+        if (timeTitle) {
+          // Chuyển đổi từ format "08/21/2025 03:03:00 PM" sang định dạng chuẩn
+          published_date = timeTitle;
+        }
+      }
+
+      if (title && articleUrl) {
+        // Tạo URL đầy đủ nếu cần
+        const fullUrl = articleUrl.startsWith('http') ? articleUrl : 
+                       `https://xaydungchinhsach.chinhphu.vn${articleUrl}`;
+        
+        articles.push({ 
+          title, 
+          url: fullUrl, 
+          image, 
+          description, 
+          published_date, 
+          category, 
+          source, 
+          author 
+        });
+      }
+    });
+
+    // Scrape thêm từ timeline_list nếu có
+    $('.timeline_list .box-category-item').each((_, element) => {
+      const el = $(element);
+      
+      const titleLink = el.find('.box-category-link-title');
+      const title = titleLink.text().trim();
+      const articleUrl = titleLink.attr('href') || '';
+      
+      const image = el.find('.box-category-avatar').attr('src') || undefined;
+      const description = el.find('.box-category-sapo').text().trim() || undefined;
+      
+      let published_date = undefined;
+      const timeElement = el.find('.time-ago');
+      if (timeElement.length) {
+        const timeTitle = timeElement.attr('title');
+        if (timeTitle) {
+          published_date = timeTitle;
+        }
+      }
+
+      if (title && articleUrl) {
+        const fullUrl = articleUrl.startsWith('http') ? articleUrl : 
+                       `https://xaydungchinhsach.chinhphu.vn${articleUrl}`;
+        
+        // Kiểm tra trùng lặp trước khi thêm
+        const isDuplicate = articles.some(article => article.url === fullUrl);
+        if (!isDuplicate) {
+          articles.push({ 
+            title, 
+            url: fullUrl, 
+            image, 
+            description, 
+            published_date, 
+            category, 
+            source, 
+            author 
+          });
+        }
+      }
+    });
+
+    // Kiểm tra bài viết đã tồn tại chưa
+    const checkResults = await Promise.all(
+      articles.map(async (article) => {
+        const exist = await ArticleServices.isArticleExist(article.title);
+        return { article, exist };
+      })
+    );
+
+    // Lọc ra bài mới
+    const newArticles = checkResults
+      .filter(item => !item.exist)
+      .map(item => item.article);
+
+    console.log(`Tìm thấy ${newArticles.length} bài viết mới trên Xây dựng Chính sách.`);
+
+    // Lấy chi tiết và lưu
+    for (const article of newArticles.reverse()) {
+      try {
+        const fullArticle = await Crawl.scrapeXayDungChinhSachDetail(article);
+        const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+        console.log('Lưu bài viết thành công với ID:', savedArticle._id);
+        console.log(article);
+      } catch (err) {
+        console.error(`Lỗi khi xử lý bài ${article.title}:`, err.message);
+        return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu' });
+      }
+    }
+
+    return res.json({
+      status: 200,
+      message: 'Hoàn tất crawl Xây dựng Chính sách',
+      total_new_articles: newArticles.length,
+    });
+  } catch (error) {
+    console.error('Lỗi khi crawl:', error.message);
+    return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu' });
+  }
+},
+
+// Hàm scrape chi tiết bài viết
+scrapeXayDungChinhSachDetail: async (item) => {
+  try {
+    const { data: html } = await axios.get(item.url, { timeout: 10000 });
+    const $ = load(html);
+
+    const container = $(".detail-main");
+
+    // Tiêu đề
+    const title = container.find("h1.title").text().trim() || item.title;
+
+    // Ngày đăng
+    let dateText = container.find(".days").text().trim() || item.published_date || '';
+    
+    // Tóm tắt
+    const summary = container.find(".detail-sapo").text().trim() || item.description || '';
+
+    // Làm sạch nội dung HTML
+    const contentNode = container.find(".detail-content").clone();
+
+    // Xóa các thẻ không cần thiết
+    contentNode.find('script, style, iframe, object, embed, input, form, button').remove();
+    
+    // Xóa phần related news/bài viết liên quan
+    contentNode.find('.VCSortableInPreviewMode[type="RelatedNewsBox"]').remove();
+    contentNode.find('.kbwscwl-relatedbox').remove();
+    contentNode.find('.kbwscwlr-list').remove();
+    contentNode.find('[relatednewsboxtype]').remove();
+    
+    // Xóa các thuộc tính không cần thiết
+    contentNode.find('[id], [class]').removeAttr('id').removeAttr('class');
+    contentNode.find('[style]').removeAttr('style');
+    contentNode.find('a[onclick], img[onclick]').removeAttr('onclick');
+    contentNode.find('a').each((i, el) => {
+      const href = $(el).attr('href');
+      if (!href || href.startsWith('javascript:')) $(el).replaceWith($(el).text());
+    });
+
+    // Tạo mảng để lưu nội dung text và vị trí ảnh
+    const contentParts = [];
+    const imageUrls = [];
+
+    // Xử lý nội dung và ảnh
+    contentNode.find('p, h1, h2, h3, h4, h5, h6').each((i, el) => {
+      const $el = $(el);
+      if ($el.text().trim()) {
+        contentParts.push($el.text().trim());
+      }
+    });
+
+    // Xử lý ảnh
+    contentNode.find('img').each((i, el) => {
+      const $img = $(el);
+      const src = $img.attr('src');
+      if (src) {
+        const fullSrc = src.startsWith('http') ? src : `https://xaydungchinhsach.chinhphu.vn${src}`;
+        imageUrls.push(fullSrc);
+        contentParts.push(`[Image: ${fullSrc}]`);
+        
+        // Chuẩn hóa ảnh
+        $img.attr('style', 'max-width: 100%; height: auto; display: block; margin: 0 auto;');
+        $img.attr('alt', $img.attr('alt') || title);
+        $img.attr('src', fullSrc);
+      }
+    });
+
+    // Chuẩn hóa các thẻ HTML
+    contentNode.find('p, div').each((i, el) => {
+      const $el = $(el);
+      if (!$el.text().trim() && !$el.find('img, figure').length) {
+        $el.remove();
+      }
+    });
+
+    // HTML đã làm sạch
+    let contentHtml = contentNode.html()?.trim() || '';
+    contentHtml = contentHtml
+      .replace(/\\n' \+/g, '')
+      .replace(/\\n/g, '')
+      .replace(/\s*\n\s*/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    // Nội dung text liền mạch
+    const contentText = contentParts.join(' ').replace(/\s{2,}/g, ' ').trim() || '';
+
+    // Ảnh trong bài
+    const images = imageUrls;
+
+    // Hàm lấy text sạch liền mạch
+    function getCleanText(html) {
+      const $ = load(html);
+      $('img, table, div, span, figure').remove();
+      let text = $.root().text();
+      text = text.replace(/\s+/g, ' ').trim();
+      return text;
+    }
+
+    const content_clean = getCleanText(contentHtml);
+    const content_ai_summary = await Utils.ai_summary(item.description + content_clean);
+
+    const fullArticle = {
+      title: title,
+      description: summary,
+      url: item.url,
+      image: images[0] || item.image,
+      published_date: dateText,
+      category: item.category,
+      source: item.source,
+      author: item.author,
+      content: contentText,
+      content_html: contentHtml,
+      content_clean: content_clean,
+      summary_array: content_ai_summary.summaryArray,
+      summary: content_ai_summary.summary
+    };
+
+    return fullArticle;
+  } catch (err) {
+    console.error("Lỗi khi crawl detail:", err.message);
+    return null;
+  }
+},
 }
 
 export default Crawl;
