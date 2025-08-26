@@ -9,6 +9,7 @@ router.post('/kiemsat', Crawl.scrapeKiemSat);
 router.post('/baohephapluat', Crawl.scrapeBaoVePhapLuat);
 router.post('/rss_congly', RssCrawl.fetchRssData_congly);
 router.post('/rss_vnexpress', RssCrawl.fetchRssData_vnexpress);
+router.post('/rss_tuoitre', RssCrawl.fetchRssData_tuoitre);
 router.post('/anle', Crawl.scrapeNhanChinh);
 router.post('/xaydungchinhsach',Crawl.scrapeXayDungChinhSach);
 
