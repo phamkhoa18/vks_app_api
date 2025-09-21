@@ -11,7 +11,6 @@ import SectionRouter from './routers/SectionRouter.js'
 import SavedArticleRouter from './routers/SaveArticleRouter.js'
 
 
-
 dotenv.config();
 // Initialize Express app
 const app = express();

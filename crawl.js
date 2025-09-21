@@ -946,6 +946,627 @@ scrapeXayDungChinhSachDetail: async (item) => {
     return null;
   }
 },
+
+scrapeVKSDakLak: async(req, res) => {
+  try {
+    await Utils.connectDB();  
+    const {url, category, source, author} = req.body;
+    console.log(req.body);
+    
+    const response = await axios.get(url);
+    const html = response.data;
+    const $ = load(html);
+
+    const articles = [];
+
+    // Lấy articles từ cấu trúc .categoryList .article-item
+    $('.categoryList .article-item').each((_, element) => {
+      const el = $(element);
+      
+      // Lấy title và url từ thẻ h4 > a
+      const titleEl = el.find('h4 a').first();
+      const title = titleEl.text().trim();
+      const articleUrl = titleEl.attr('href') || '';
+      
+      // Xử lý URL - nếu là relative path thì thêm domain
+      let fullUrl = articleUrl;
+      if (articleUrl.startsWith('/')) {
+        fullUrl = 'https://vksdaklak.gov.vn' + articleUrl;
+      }
+      
+      // Lấy image từ thẻ a.img > img
+      const image = el.find('a.img img').attr('src') || undefined;
+      let fullImageUrl = image;
+      if (image && image.startsWith('/')) {
+        fullImageUrl = 'https://vksdaklak.gov.vn' + image;
+      }
+      
+      // Lấy description từ .text-justify
+      const description = el.find('.text-justify').text().trim() || undefined;
+      
+      // Lấy published_date từ span trong h4
+      const published_date = el.find('h4 span').text().trim().replace(/[()]/g, '') || undefined;
+
+      // Chỉ thêm vào nếu có title và url
+      if (title && articleUrl) {
+        articles.push({ 
+          title, 
+          url: fullUrl, 
+          image: fullImageUrl, 
+          description, 
+          published_date, 
+          category, 
+          source, 
+          author 
+        });
+      }
+    });
+
+    console.log(`Tìm thấy ${articles.length} bài viết từ VKS Đắk Lắk.`);
+
+    // Kiểm tra bài viết đã có trong DB
+    const checkResults = await Promise.all(
+      articles.map(async (article) => {
+        const exist = await ArticleServices.isArticleExist(article.title);
+        return { article, exist };
+      })
+    );
+
+    // Lọc ra bài chưa có
+    const newArticles = checkResults.filter(item => !item.exist).map(item => item.article);
+
+    console.log(`Tìm thấy ${newArticles.length} bài viết chưa có trong DB.`);
+
+    // Lấy chi tiết từng bài viết, sau đó lưu vào DB
+    for (const article of newArticles.reverse()) {
+      try {
+        const fullArticle = await Crawl.scrapeVKSDakLakArticleContent(article);
+        const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+        console.log('Lưu bài viết thành công với ID:', savedArticle._id);
+      } catch (err) {
+        console.error(`Lỗi lấy hoặc lưu bài viết ${article.title}:`, err.message);
+      }
+    }
+
+    return res.json({
+      status: 200,
+      message: 'Hoàn tất crawl VKS Đắk Lắk',
+      total_new_articles: newArticles.length,
+    });
+
+  } catch (error) {
+    console.error('Lỗi khi crawl VKS Đắk Lắk:', error.message);
+    return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu VKS Đắk Lắk' });
+  }
+},
+
+scrapeVKSDakLakArticleContent: async(item) => {
+  try {
+    const response = await axios.get(item.url, { timeout: 10000 });
+    const html = response.data;
+    const $ = load(html);
+
+    // Lấy content từ .article-content
+    const contentParts = [];
+    $('.article-content p, .article-content img').each((i, el) => {
+      if ($(el).is('p')) {
+        const text = $(el).text().trim();
+        if (text && !$(el).find('.AuthorName').length) { // Bỏ qua tên tác giả
+          contentParts.push(text);
+        }
+      } else if ($(el).is('img')) {
+        const imgSrc = $(el).attr('src');
+        if (imgSrc) {
+          let fullImgUrl = imgSrc;
+          if (imgSrc.startsWith('/')) {
+            fullImgUrl = 'https://vksdaklak.gov.vn' + imgSrc;
+          }
+          contentParts.push(`[Image: ${fullImgUrl}]`);
+        }
+      }
+    });
+
+    // Lấy nguyên đoạn html phần nội dung chi tiết
+    const rawHtml = $('.article-content').html() || '';
+    const contentHtml = Crawl.cleanVKSDakLakContentHtml(rawHtml);
+
+    // Hàm lấy text sạch liền mạch
+    function getCleanText(html) {
+      const $ = load(html);
+      // Xóa các thẻ không cần thiết nhưng giữ lại text
+      $('.AuthorName, .binh-chon, script, style').remove();
+      // Lấy toàn bộ text bên trong
+      let text = $.root().text();
+      // Thay nhiều dấu xuống dòng, tab, space thành 1 space, trim đầu cuối
+      text = text.replace(/\s+/g, ' ').trim();
+      return text;
+    }
+
+    const content_clean = getCleanText(rawHtml);
+    const content_ai_summary = await Utils.ai_summary(item.description + content_clean);
+
+    // Lấy title từ h1.heading-title hoặc từ item
+    const detailTitle = $('.heading-title').text().trim() || item.title;
+    
+    const fullArticle = {
+      title: detailTitle,
+      description: item.description,
+      url: item.url,
+      image: item.image,
+      published_date: item.published_date,
+      category: item.category,
+      source: item.source,
+      author: item.author,
+      content: contentParts.join('\n\n'),
+      content_html: contentHtml,
+      content_clean: content_clean,
+      summary_array: content_ai_summary.summaryArray,
+      summary: content_ai_summary.summary
+    };
+
+    return fullArticle;
+  } catch (error) {
+    throw new Error(`Lỗi lấy nội dung bài viết VKS Đắk Lắk: ${error.message}`);
+  }
+},
+
+cleanVKSDakLakContentHtml: (html) => {
+  const $ = load(html);
+
+  // Xóa title và description để tránh trùng lặp
+  $('.heading-title').remove(); // Xóa h1 title
+  $('p').first().remove(); // Xóa đoạn description đầu tiên (thường là đoạn có <strong>)
+
+  // Xử lý images - thêm style responsive
+  $('img').each((i, img) => {
+    const $img = $(img);
+    
+    // Convert relative URL thành absolute URL
+    let src = $img.attr('src');
+    if (src && src.startsWith('/')) {
+      $img.attr('src', 'https://vksdaklak.gov.vn' + src);
+    }
+    
+    $img.attr('style', 'max-width:100%; height:auto; display:block; margin: 10px auto;');
+  });
+
+  // Xử lý các đoạn văn
+  $('p').each((i, p) => {
+    const $p = $(p);
+    if ($p.css('text-align') === 'center') {
+      $p.css('margin', '15px 0');
+    }
+  });
+
+  // Xóa các thẻ không cần thiết
+  $('.binh-chon, script, style').remove();
+
+  // Xử lý author name
+  $('.AuthorName').css({
+    'text-align': 'right',
+    'font-weight': 'bold',
+    'margin-top': '20px'
+  });
+
+  // Lấy chỉ phần bên trong body
+  return $('body').html() || $.root().html();
+},
+
+// Scraper cho VKS Đà Nẵng
+scrapeVKSDaNang: async(req, res) => {
+  try {
+    await Utils.connectDB();  
+    const {url, category, source, author} = req.body;
+    console.log(req.body);
+    
+    const response = await axios.get(url);
+    const html = response.data;
+    const $ = load(html);
+
+    const articles = [];
+
+    // Lấy articles từ cấu trúc .viewcatpage-item
+    $('.viewcatpage-item').each((_, element) => {
+      const el = $(element);
+      
+      // Lấy title và url từ thẻ h2 > a
+      const titleEl = el.find('h2 a').first();
+      const title = titleEl.text().trim();
+      const articleUrl = titleEl.attr('href') || '';
+      
+      // Xử lý URL - nếu là relative path thì thêm domain
+      let fullUrl = articleUrl;
+      if (articleUrl.startsWith('/')) {
+        fullUrl = 'https://vksdanang.gov.vn' + articleUrl;
+      }
+      
+      // Lấy image từ thẻ a > img đầu tiên
+      const image = el.find('a img').first().attr('src') || undefined;
+      let fullImageUrl = image;
+      if (image && image.startsWith('/')) {
+        fullImageUrl = 'https://vksdanang.gov.vn' + image;
+      }
+      
+      // Lấy description từ thẻ p cuối cùng
+      const description = el.find('p').last().text().trim() || undefined;
+      
+      // Lấy published_date từ span.publtime
+      const publishedDateEl = el.find('span.publtime');
+      let published_date = undefined;
+      if (publishedDateEl.length > 0) {
+        // Lấy text và loại bỏ icon fa-clock-o
+        published_date = publishedDateEl.text().replace(/\s*\s*/g, '').trim() || undefined;
+      }
+
+      // Chỉ thêm vào nếu có title và url
+      if (title && articleUrl) {
+        articles.push({ 
+          title, 
+          url: fullUrl, 
+          image: fullImageUrl, 
+          description, 
+          published_date, 
+          category, 
+          source, 
+          author 
+        });
+      }
+    });
+
+    console.log(`Tìm thấy ${articles.length} bài viết từ VKS Đà Nẵng.`);
+
+    // Kiểm tra bài viết đã có trong DB
+    const checkResults = await Promise.all(
+      articles.map(async (article) => {
+        const exist = await ArticleServices.isArticleExist(article.title);
+        return { article, exist };
+      })
+    );
+
+    // Lọc ra bài chưa có
+    const newArticles = checkResults.filter(item => !item.exist).map(item => item.article);
+
+    console.log(`Tìm thấy ${newArticles.length} bài viết chưa có trong DB.`);
+
+    // Lấy chi tiết từng bài viết, sau đó lưu vào DB
+    for (const article of newArticles.reverse()) {
+      try {
+        const fullArticle = await Crawl.scrapeVKSDaNangArticleContent(article);
+        const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+        console.log('Lưu bài viết thành công với ID:', savedArticle._id);
+      } catch (err) {
+        console.error(`Lỗi lấy hoặc lưu bài viết ${article.title}:`, err.message);
+      }
+    }
+
+    return res.json({
+      status: 200,
+      message: 'Hoàn tất crawl VKS Đà Nẵng',
+      total_new_articles: newArticles.length,
+    });
+
+  } catch (error) {
+    console.error('Lỗi khi crawl VKS Đà Nẵng:', error.message);
+    return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu VKS Đà Nẵng' });
+  }
+},
+
+scrapeVKSDaNangArticleContent: async(item) => {
+  try {
+    const response = await axios.get(item.url, { timeout: 10000 });
+    const html = response.data;
+    const $ = load(html);
+
+    // Lấy content từ #news-bodyhtml
+    const contentParts = [];
+    $('#news-bodyhtml p, #news-bodyhtml img').each((i, el) => {
+      if ($(el).is('p')) {
+        const text = $(el).text().trim();
+        // Bỏ qua các thẻ p chỉ chứa thông tin tác giả/nguồn
+        if (text && !text.startsWith('Tin:') && !text.startsWith('Ảnh:') && !$(el).find('strong').text().startsWith('Tin:')) {
+          contentParts.push(text);
+        }
+      } else if ($(el).is('img')) {
+        const imgSrc = $(el).attr('src');
+        if (imgSrc) {
+          let fullImgUrl = imgSrc;
+          if (imgSrc.startsWith('/')) {
+            fullImgUrl = 'https://vksdanang.gov.vn' + imgSrc;
+          }
+          contentParts.push(`[Image: ${fullImgUrl}]`);
+        }
+      }
+    });
+
+    // Lấy nguyên đoạn html phần nội dung chi tiết
+    const rawHtml = $('#news-bodyhtml').html() || '';
+    const contentHtml = Crawl.cleanVKSDaNangContentHtml(rawHtml);
+
+    // Hàm lấy text sạch liền mạch
+    function getCleanText(html) {
+      const $ = load(html);
+      // Xóa các thẻ không cần thiết nhưng giữ lại text
+      $('script, style').remove();
+      // Lấy toàn bộ text bên trong
+      let text = $.root().text();
+      // Thay nhiều dấu xuống dòng, tab, space thành 1 space, trim đầu cuối
+      text = text.replace(/\s+/g, ' ').trim();
+      return text;
+    }
+
+    const content_clean = getCleanText(rawHtml);
+    const content_ai_summary = await Utils.ai_summary(item.description + content_clean);
+
+    // Lấy title từ h1.post-title hoặc từ item
+    const detailTitle = $('.post-title').text().trim() || item.title;
+    
+    // Lấy thời gian publish chi tiết từ span.post-time
+    let detailPublishedDate = item.published_date;
+    const postTimeEl = $('.post-time');
+    if (postTimeEl.length > 0) {
+      detailPublishedDate = postTimeEl.text().replace(/\s*\s*/g, '').trim() || item.published_date;
+    }
+    
+    const fullArticle = {
+      title: detailTitle,
+      description: item.description,
+      url: item.url,
+      image: item.image,
+      published_date: detailPublishedDate,
+      category: item.category,
+      source: item.source,
+      author: item.author,
+      content: contentParts.join('\n\n'),
+      content_html: contentHtml,
+      content_clean: content_clean,
+      summary_array: content_ai_summary.summaryArray,
+      summary: content_ai_summary.summary
+    };
+
+    return fullArticle;
+  } catch (error) {
+    throw new Error(`Lỗi lấy nội dung bài viết VKS Đà Nẵng: ${error.message}`);
+  }
+},
+
+cleanVKSDaNangContentHtml: (html) => {
+  const $ = load(html);
+
+  // Xóa title và description để tránh trùng lặp
+  $('.post-title').remove(); // Xóa h1 title
+  $('.hometext').remove(); // Xóa phần description
+
+  // Xử lý images - thêm style responsive
+  $('img').each((i, img) => {
+    const $img = $(img);
+    
+    // Convert relative URL thành absolute URL
+    let src = $img.attr('src');
+    if (src && src.startsWith('/')) {
+      $img.attr('src', 'https://vksdanang.gov.vn' + src);
+    }
+    
+    $img.attr('style', 'max-width:100%; height:auto; display:block; margin: 10px auto;');
+  });
+
+  // Xử lý các đoạn văn
+  $('p').each((i, p) => {
+    const $p = $(p);
+    const text = $p.text().trim();
+    
+    // Xóa các đoạn chứa thông tin tác giả/nguồn
+    if (text.startsWith('Tin:') || text.startsWith('Ảnh:') || $p.find('strong').text().startsWith('Tin:')) {
+      $p.remove();
+      return;
+    }
+    
+    // Xử lý italic cho các caption ảnh
+    if (text.startsWith('Hình ảnh') || text.startsWith('Một số hình ảnh')) {
+      $p.css({
+        'font-style': 'italic',
+        'text-align': 'center',
+        'margin': '10px 0'
+      });
+    }
+  });
+
+  // Xóa các thẻ không cần thiết
+  $('script, style, .rating, hr').remove();
+
+  // Lấy chỉ phần bên trong body
+  return $('body').html() || $.root().html();
+},
+
+// Scraper cho Tạp chí Tòa án nhân dân
+scrapeTapChiToaAn: async(req, res) => {
+  try {
+    await Utils.connectDB();  
+    const {url, category, source, author} = req.body;
+    console.log(req.body);
+    
+    const response = await axios.get(url);
+    const html = response.data;
+    const $ = load(html);
+
+    const articles = [];
+
+    // Lấy articles từ cấu trúc .d-md-flex.post-entry-2.small-img
+    $('.d-md-flex.post-entry-2.small-img').each((_, element) => {
+      const el = $(element);
+      
+      // Lấy title và url từ thẻ h3 > a
+      const titleEl = el.find('h3 a').first();
+      const title = titleEl.text().trim();
+      const articleUrl = titleEl.attr('href') || '';
+      
+      // URL đã là absolute URL, không cần xử lý
+      const fullUrl = articleUrl;
+      
+      // Lấy image từ thẻ a.thumbnail > img
+      const image = el.find('a.thumbnail img').first().attr('src') || undefined;
+      
+      // Lấy description từ thẻ p (đoạn văn bản mô tả)
+      const description = el.find('> div > p').first().text().trim() || undefined;
+      
+      // Chỉ thêm vào nếu có title và url
+      if (title && articleUrl) {
+        articles.push({ 
+          title, 
+          url: fullUrl, 
+          image, 
+          description, 
+          published_date: undefined, // Sẽ lấy trong trang chi tiết
+          category, 
+          source, 
+          author: author
+        });
+      }
+    });
+
+    console.log(`Tìm thấy ${articles.length} bài viết từ Tạp chí Tòa án nhân dân.`);
+
+    // Kiểm tra bài viết đã có trong DB
+    const checkResults = await Promise.all(
+      articles.map(async (article) => {
+        const exist = await ArticleServices.isArticleExist(article.title);
+        return { article, exist };
+      })
+    );
+
+    // Lọc ra bài chưa có
+    const newArticles = checkResults.filter(item => !item.exist).map(item => item.article);
+
+    console.log(`Tìm thấy ${newArticles.length} bài viết chưa có trong DB.`);
+
+    // Lấy chi tiết từng bài viết, sau đó lưu vào DB
+    for (const article of newArticles.reverse()) {
+      try {
+        const fullArticle = await Crawl.scrapeTapChiToaAnArticleContent(article);
+        const savedArticle = await ArticleServices.saveArticleItem(fullArticle);
+        console.log('Lưu bài viết thành công với ID:', savedArticle._id);
+      } catch (err) {
+        console.error(`Lỗi lấy hoặc lưu bài viết ${article.title}:`, err.message);
+      }
+    }
+
+    return res.json({
+      status: 200,
+      message: 'Hoàn tất crawl Tạp chí Tòa án nhân dân',
+      total_new_articles: newArticles.length,
+    });
+
+  } catch (error) {
+    console.error('Lỗi khi crawl Tạp chí Tòa án nhân dân:', error.message);
+    return res.status(500).json({ error: 'Lỗi khi crawl dữ liệu Tạp chí Tòa án nhân dân' });
+  }
+},
+
+scrapeTapChiToaAnArticleContent: async(item) => {
+  try {
+    const response = await axios.get(item.url, { timeout: 10000 });
+    const html = response.data;
+    const $ = load(html);
+
+    // Lấy description từ h5.short-desc trong trang chi tiết
+    const detailDescription = $('h5.short-desc strong').text().trim() || 
+                             $('h5.short-desc').text().trim() || 
+                             item.description;
+
+    // Lấy content từ .my-4.post-entry
+    const contentParts = [];
+    $('.my-4.post-entry p, .my-4.post-entry img').each((i, el) => {
+      if ($(el).is('p')) {
+        const text = $(el).text().trim();
+        if (text) {
+          contentParts.push(text);
+        }
+      } else if ($(el).is('img')) {
+        const imgSrc = $(el).attr('src');
+        if (imgSrc) {
+          contentParts.push(`[Image: ${imgSrc}]`);
+        }
+      }
+    });
+
+    // Lấy nguyên đoạn html phần nội dung chi tiết
+    const rawHtml = $('.my-4.post-entry').html() || '';
+    const contentHtml = Crawl.cleanTapChiToaAnContentHtml(rawHtml);
+
+    // Hàm lấy text sạch liền mạch
+    function getCleanText(html) {
+      const $ = load(html);
+      $('script, style').remove();
+      let text = $.root().text();
+      text = text.replace(/\s+/g, ' ').trim();
+      return text;
+    }
+
+    const content_clean = getCleanText(rawHtml);
+    const content_ai_summary = await Utils.ai_summary(item.description + content_clean);
+
+    // Lấy title từ h1.mb-2.mt-3
+    const detailTitle = $('.single-post h1.mb-2.mt-3').text().trim() || item.title;
+    
+    // Lấy thời gian publish từ .post-meta span
+    let detailPublishedDate = item.published_date;
+    const postTimeEl = $('.post-meta span');
+    if (postTimeEl.length > 0) {
+      detailPublishedDate = postTimeEl.first().text().trim() || item.published_date;
+    }
+    
+    const fullArticle = {
+      title: detailTitle,
+      description: detailDescription,
+      url: item.url,
+      image: item.image,
+      published_date: detailPublishedDate,
+      category: item.category,
+      source: item.source,
+      author: item.author,
+      content: contentParts.join('\n\n'),
+      content_html: contentHtml,
+      content_clean: content_clean,
+      summary_array: content_ai_summary.summaryArray,
+      summary: content_ai_summary.summary
+    };
+
+    return fullArticle;
+  } catch (error) {
+    throw new Error(`Lỗi lấy nội dung bài viết Tạp chí Tòa án nhân dân: ${error.message}`);
+  }
+},
+
+cleanTapChiToaAnContentHtml: (html) => {
+  const $ = load(html);
+
+  // Xử lý images - thêm style responsive
+  $('img').each((i, img) => {
+    const $img = $(img);
+    $img.attr('style', 'max-width:100%; height:auto; display:block; margin: 10px auto;');
+  });
+
+  // Xử lý các đoạn văn
+  $('p').each((i, p) => {
+    const $p = $(p);
+    const text = $p.text().trim();
+    
+    // Xử lý italic cho các caption hoặc chú thích
+    if (text.startsWith('[') || $p.find('strong').length > 0) {
+      $p.css({
+        'font-style': 'italic',
+        'margin': '10px 0'
+      });
+    }
+  });
+
+  // Xóa các thẻ không cần thiết
+  $('script, style, .rating, hr').remove();
+
+  return $('body').html() || $.root().html();
+},
+
+
+
 }
 
 export default Crawl;
