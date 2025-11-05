@@ -59,7 +59,7 @@ const Crawl = {
       // Kiểm tra bài viết đã có trong DB
       const checkResults = await Promise.all(
         articles.map(async (article) => {
-          const exist = await ArticleServices.isArticleExist(article.title);
+          const exist = await ArticleServices.isArticleExist(article);
           return { article, exist };
         })
       );
@@ -209,7 +209,7 @@ const Crawl = {
       // Kiểm tra bài viết đã tồn tại chưa
       const checkResults = await Promise.all(
         articles.map(async (article) => {
-          const exist = await ArticleServices.isArticleExist(article.title);
+          const exist = await ArticleServices.isArticleExist(article);
           return { article, exist };
         })
       );
@@ -430,7 +430,7 @@ const Crawl = {
       // Kiểm tra bài viết đã có trong DB
       const checkResults = await Promise.all(
         articles.map(async (article) => {
-          const exist = await ArticleServices.isArticleExist(article.title);
+          const exist = await ArticleServices.isArticleExist(article);
           return { article, exist };
         })
       );
@@ -787,7 +787,7 @@ scrapeXayDungChinhSach: async (req, res) => {
     // Kiểm tra bài viết đã tồn tại chưa
     const checkResults = await Promise.all(
       articles.map(async (article) => {
-        const exist = await ArticleServices.isArticleExist(article.title);
+        const exist = await ArticleServices.isArticleExist(article);
         return { article, exist };
       })
     );
@@ -1007,7 +1007,7 @@ scrapeVKSDakLak: async(req, res) => {
     // Kiểm tra bài viết đã có trong DB
     const checkResults = await Promise.all(
       articles.map(async (article) => {
-        const exist = await ArticleServices.isArticleExist(article.title);
+        const exist = await ArticleServices.isArticleExist(article);
         return { article, exist };
       })
     );
@@ -1218,7 +1218,7 @@ scrapeVKSDaNang: async(req, res) => {
     // Kiểm tra bài viết đã có trong DB
     const checkResults = await Promise.all(
       articles.map(async (article) => {
-        const exist = await ArticleServices.isArticleExist(article.title);
+        const exist = await ArticleServices.isArticleExist(article);
         return { article, exist };
       })
     );
@@ -1428,7 +1428,7 @@ scrapeTapChiToaAn: async(req, res) => {
     // Kiểm tra bài viết đã có trong DB
     const checkResults = await Promise.all(
       articles.map(async (article) => {
-        const exist = await ArticleServices.isArticleExist(article.title);
+        const exist = await ArticleServices.isArticleExist(article);
         return { article, exist };
       })
     );

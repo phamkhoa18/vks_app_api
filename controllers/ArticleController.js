@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import Article from '../models/Article.js';
 import User from '../models/User.js';
 import Category from '../models/Category.js';
+import ArticleServices from '../services/ArticleService.js';
 
 const ArticlesController = {
   add: async (req, res) => {
@@ -36,6 +37,20 @@ const ArticlesController = {
         if (!user) {
           return res.status(400).json({ message: 'User for createdBy not found' });
         }
+      }
+
+      // Kiểm tra bài viết đã tồn tại chưa (check duplicate)
+      const checkDuplicate = await ArticleServices.isArticleExist({
+        title: originalTitle || title,
+        url: originalUrl
+      });
+
+      if (checkDuplicate) {
+        return res.status(409).json({ 
+          success: false,
+          message: 'Article already exists (duplicate title or URL)',
+          error: 'Article with the same title or URL already exists in the database'
+        });
       }
 
       // Create new article
