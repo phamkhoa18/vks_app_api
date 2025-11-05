@@ -18,7 +18,8 @@ const ArticleSchema = new mongoose.Schema({
   image: { type: String },
   publishDate: { type: Date , default: Date.now},
   createdAt: { type: Date, default: Date.now },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' , default: null}
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' , default: null},
+  isUsedInTopic: { type: Boolean, default: false }
 });
 
 const Article = mongoose.model('Article', ArticleSchema);

@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import Section from '../models/Section.js';
 import Topic from '../models/Topic.js';
 import Utils from '../services/Utils.js';
-
+import { createSectionWithTopics } from '../services/SectionServices.js';
 const SectionsController = {
   // Tạo section với topics từ articles + summary tổng hợp
   generateSection: async (req, res) => {
@@ -659,6 +659,19 @@ const SectionsController = {
     }
     
     next();
+  },
+
+  generateDailySection: async (req, res) => {
+    try {
+      const newSection = await createSectionWithTopics();
+      res.status(201).json({
+        message: 'Section created successfully with selected articles',
+        section: newSection,
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: 'Error creating section', error: error.message });
+    }
   }
 };
 

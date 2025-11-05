@@ -20,4 +20,6 @@ router.put('/:id', SectionsController.update); // Cập nhật section (bao gồ
 router.patch('/:id/topics', SectionsController.addTopics);
 router.delete('/:id', SectionsController.delete);
 
+router.post('/generate-section', SectionsController.generateDailySection);
+
 export default router;

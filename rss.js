@@ -563,7 +563,7 @@ const RssCrawl = {
             details: error.message 
           });
         }
-      },
+    },
 
 fetchRssData_tuoitre: async(req, res) => {
     try {
@@ -1026,9 +1026,13 @@ fetchRssData_thanhnien: async(req, res) => {
         };
       });
 
+      // THÊM: Giới hạn chỉ lấy 20 bài mới nhất
+      const limitedArticles = articles.slice(0, 20);
+      console.log(`📰 Tổng số bài: ${articles.length}, Lấy ${limitedArticles.length} bài mới nhất`);
+
       // Kiểm tra bài viết đã tồn tại chưa
       const checkResults = await Promise.all(
-        articles.map(async (article) => {
+        limitedArticles.map(async (article) => {
           const exist = await ArticleServices.isArticleExist(article);
           return { article, exist };
         })
@@ -1082,7 +1086,9 @@ fetchRssData_thanhnien: async(req, res) => {
       return res.json({
         status: 200,
         message: 'Hoàn tất crawl Thanh Niên',
-        total_new_articles: newArticles.length,
+        total_articles: articles.length,
+        processed_articles: limitedArticles.length,
+        new_articles: newArticles.length,
         successful_saves: successCount,
         skipped_articles: skipCount
       });

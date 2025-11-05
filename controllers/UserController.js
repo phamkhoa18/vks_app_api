@@ -7,13 +7,11 @@ const UsersController = {
     try {
       const { email, password, name, avatar, role } = req.body;
 
-      // Check if email already exists
       const existingUser = await User.findOne({ email });
       if (existingUser) {
         return res.status(400).json({ message: 'Email already exists' });
       }
 
-      // Hash password
       const hashedPassword = await bcrypt.hash(password, 10);
 
       const user = new User({
@@ -25,7 +23,6 @@ const UsersController = {
       });
 
       await user.save();
-      // Return user without password
       const { password: _, ...userWithoutPassword } = user.toObject();
       res.status(201).json(userWithoutPassword);
     } catch (error) {
@@ -38,19 +35,16 @@ const UsersController = {
     try {
       const { email, password } = req.body;
 
-      // Find user by email
       const user = await User.findOne({ email });
       if (!user) {
         return res.status(401).json({ message: 'Invalid email or password' });
       }
 
-      // Compare password
       const isMatch = await bcrypt.compare(password, user.password);
       if (!isMatch) {
         return res.status(401).json({ message: 'Invalid email or password' });
       }
 
-      // Return user without password
       const { password: _, ...userWithoutPassword } = user.toObject();
       res.status(200).json({ message: 'Login successful', user: userWithoutPassword });
     } catch (error) {
@@ -81,30 +75,47 @@ const UsersController = {
     }
   },
 
-  // Update user
-  update: async (req, res) => {
+  // ✅ UPDATE PROFILE - Cho user tự update (chỉ name, avatar, password)
+  updateProfile: async (req, res) => {
     try {
-      const { email, name, avatar, role, password } = req.body;
-      const updateData = { email, name, avatar, role };
+      const { name, avatar, password, currentPassword } = req.body;
+      const userId = req.params.id;
 
-      // If password is provided, hash it
-      if (password) {
-        updateData.password = await bcrypt.hash(password, 10);
-      }
-
-      const user = await User.findByIdAndUpdate(
-        req.params.id,
-        updateData,
-        { new: true, runValidators: true }
-      ).select('-password');
-
+      const user = await User.findById(userId);
       if (!user) {
         return res.status(404).json({ message: 'User not found' });
       }
 
-      res.status(200).json(user);
+      // Prepare update data (KHÔNG cho phép đổi email)
+      const updateData = { name, avatar };
+
+      // If user wants to change password
+      if (password) {
+        if (!currentPassword) {
+          return res.status(400).json({ message: 'Current password is required' });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+          return res.status(401).json({ message: 'Current password is incorrect' });
+        }
+
+        if (password.length < 6) {
+          return res.status(400).json({ message: 'Password must be at least 6 characters' });
+        }
+
+        updateData.password = await bcrypt.hash(password, 10);
+      }
+
+      const updatedUser = await User.findByIdAndUpdate(
+        userId,
+        updateData,
+        { new: true, runValidators: true }
+      ).select('-password');
+
+      res.status(200).json(updatedUser);
     } catch (error) {
-      res.status(500).json({ message: 'Error updating user', error: error.message });
+      res.status(500).json({ message: 'Error updating profile', error: error.message });
     }
   },
 
